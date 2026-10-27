@@ -1,0 +1,21 @@
+# Secrets (API keys) — .env.example is the committed template
+.env
+
+# Personal trading data
+journal.db
+journal.db-*
+uploads/
+demo_uploads/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
