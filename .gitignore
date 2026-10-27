@@ -6,6 +6,7 @@ journal.db
 journal.db-*
 uploads/
 demo_uploads/
+backups/
 
 # Python
 __pycache__/

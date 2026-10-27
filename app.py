@@ -3,7 +3,7 @@
 Run:  python app.py            -> real data (.env with READ-ONLY API keys, and/or CSV import)
       python app.py --demo     -> fake data in demo.db, no keys needed
 
-Everything stays on your machine: trades in journal.db, screenshots in uploads/.
+Everything stays on your machine: trades in journal.db, screenshots in uploads/ (or in DATA_DIR, see .env.example).
 """
 import bisect
 import csv
@@ -31,8 +31,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(HERE, ".env"))
 
 DEMO = "--demo" in sys.argv
-DB_PATH = os.path.join(HERE, "demo.db" if DEMO else "journal.db")
-UPLOAD_DIR = os.path.join(HERE, "demo_uploads" if DEMO else "uploads")
+# DATA_DIR (e.g. a Google Drive for Desktop folder) holds journal.db, uploads/ and backups/. Demo data stays here.
+DATA_DIR = HERE if DEMO else os.path.expanduser(os.getenv("DATA_DIR", "").strip().strip('"')) or HERE
+if not os.path.isdir(DATA_DIR):
+    sys.exit(f"DATA_DIR not found: {DATA_DIR}\nIs Google Drive for Desktop running? Fix DATA_DIR in .env or remove it.")
+DB_PATH = os.path.join(HERE, "demo.db") if DEMO else os.path.join(DATA_DIR, "journal.db")
+UPLOAD_DIR = os.path.join(HERE, "demo_uploads") if DEMO else os.path.join(DATA_DIR, "uploads")
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+BACKUP_KEEP = 14
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 BINANCE_BASE = "https://fapi.binance.com"
@@ -1290,10 +1296,56 @@ def api_plan_delete(pid):
     return jsonify(ok=True)
 
 
+def backup_db():
+    """Once a day, snapshot journal.db into backups/ (sqlite backup API, safe while open) and keep the newest few."""
+    if not os.path.exists(DB_PATH):
+        return
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    dest = os.path.join(BACKUP_DIR, f"journal-{datetime.now():%Y-%m-%d}.db")
+    if not os.path.exists(dest):
+        src, out = sqlite3.connect(DB_PATH), sqlite3.connect(dest)
+        with out:
+            src.backup(out)
+        src.close(), out.close()
+    old = sorted(f for f in os.listdir(BACKUP_DIR) if re.fullmatch(r"journal-\d{4}-\d{2}-\d{2}\.db", f))
+    for f in old[:-BACKUP_KEEP]:
+        os.remove(os.path.join(BACKUP_DIR, f))
+
+
+def move_data():
+    """Copy journal.db and uploads/ from the project folder into DATA_DIR. Originals are left as a backup."""
+    import shutil
+    if os.path.samefile(DATA_DIR, HERE):
+        sys.exit("Set DATA_DIR in .env to your Google Drive folder first.")
+    src_db, src_up = os.path.join(HERE, "journal.db"), os.path.join(HERE, "uploads")
+    if os.path.exists(DB_PATH):
+        sys.exit(f"{DB_PATH} already exists - not overwriting it.")
+    if os.path.exists(src_db):
+        a, b = sqlite3.connect(src_db), sqlite3.connect(DB_PATH)
+        with b:
+            a.backup(b)
+        a.close()
+        ok = b.execute("PRAGMA integrity_check").fetchone()[0]
+        b.close()
+        print(f"journal.db -> {DB_PATH}  (integrity: {ok})")
+    files = os.listdir(src_up) if os.path.isdir(src_up) else []
+    for f in files:
+        if not os.path.exists(os.path.join(UPLOAD_DIR, f)):
+            shutil.copy2(os.path.join(src_up, f), UPLOAD_DIR)
+    print(f"uploads: {len(files)} in project folder, {len(os.listdir(UPLOAD_DIR))} now in {UPLOAD_DIR}")
+    print("Done. Originals were left in place - delete them once the app looks right.")
+
+
 if __name__ == "__main__":
+    if "--move-data" in sys.argv:
+        move_data()
+        sys.exit()
     if DEMO:
         seed_demo()
     else:
         db()
+        backup_db()
     print(f"Trade journal running on http://127.0.0.1:5055  ({'DEMO data' if DEMO else 'real data'})")
+    if not DEMO:
+        print(f"Data folder: {DATA_DIR}")
     app.run(host="127.0.0.1", port=5055, debug=False)
